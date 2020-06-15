@@ -273,6 +273,10 @@ class TrainerTrainLoopMixin(ABC):
         """Warning: this is just empty shell for code implemented in other class."""
 
     @abstractmethod
+    def scale_gradients(self):
+        """Warning: this is just empty shell for code implemented in other class."""
+
+    @abstractmethod
     def detect_nan_tensors(self, *args):
         """Warning: this is just empty shell for code implemented in other class."""
 
@@ -428,6 +432,7 @@ class TrainerTrainLoopMixin(ABC):
         outputs = []
 
         # run epoch
+        self.batch_weight_sum = 0.0
         for batch_idx, (batch, is_last_batch) in self.profiler.profile_iterable(
                 enumerate(_with_is_last(train_dataloader)), "get_train_batch"
         ):
@@ -591,12 +596,20 @@ class TrainerTrainLoopMixin(ABC):
 
                     # accumulate loss
                     # (if accumulate_grad_batches = 1 no effect)
-                    closure_loss = closure_loss / self.accumulate_grad_batches
+                    # closure_loss = closure_loss / self.accumulate_grad_batches
+                    # modification by rui: now multiplies batch_weight
+                    # will be scaled down in right before gradient clipping, around line 657
+                    if 'batch_weight' in callback_metrics:
+                        weight = callback_metrics['batch_weight']
+                        self.batch_weight_sum += weight
+                    else:
+                        weight = 1.0
+                    #closure_loss = closure_loss * weight
 
                     # backward pass
                     model_ref = self.get_model()
                     with self.profiler.profile('model_backward'):
-                        model_ref.backward(self, closure_loss, optimizer, opt_idx)
+                        model_ref.backward(self, weight * closure_loss, optimizer, opt_idx)
 
                     # track metrics for callbacks
                     all_callback_metrics.append(callback_metrics)
@@ -625,6 +638,7 @@ class TrainerTrainLoopMixin(ABC):
                     self.detect_nan_tensors(loss)
 
                 # track total loss for logging (avoid mem leaks)
+                # now, if batch_weight is specified, weight separate batches accordingly
                 self.batch_loss_value.append(loss)
 
                 # gradient update with accumulated gradients
@@ -640,6 +654,10 @@ class TrainerTrainLoopMixin(ABC):
                     # clip gradients
                     if self.use_amp and self.use_native_amp:
                         self.scaler.unscale_(optimizer)
+
+                    # scale batch gradients, in accordance with in optimizer_closure. 
+                    self.scale_gradients(self.batch_weight_sum)
+                    self.batch_weight_sum = 0.0
                     self.clip_gradients()
 
                     # calls .step(), .zero_grad()

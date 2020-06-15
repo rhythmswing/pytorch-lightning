@@ -72,6 +72,22 @@ class TrainerTrainingTricksMixin(ABC):
             for p in parameters:
                 p.grad.data.mul_(torch.where(clip_coef < 1, clip_coef, torch.tensor(1., device=device)))
 
+    def scale_gradients(self, factor):
+        """ 
+            function by rui, 
+            based on clip_gradients
+            scale down gradient by a factor of "factor". 
+        """
+        model = self.get_model()
+        parameters = model.parameters()
+        if isinstance(parameters, torch.Tensor):
+            parameters = [parameters]
+        parameters = list(filter(lambda p: p.grad is not None, parameters))
+        eps = EPSILON_FP16 if self.precision == 16 else EPSILON
+
+        for p in parameters:
+            p.grad.data.mul_(1/(factor+eps))
+
     def print_nan_gradients(self) -> None:
         model = self.get_model()
         for param in model.parameters():
